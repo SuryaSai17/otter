@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Otter Link Transcribe Prototype</title>
+    <style>
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+        background: #f6f7fb;
+        color: #1f2430;
+        margin: 0;
+        padding: 24px;
+      }
+      .container {
+        max-width: 960px;
+        margin: 0 auto;
+        display: grid;
+        gap: 24px;
+      }
+      header {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .card {
+        background: #fff;
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+      button {
+        border: none;
+        border-radius: 10px;
+        padding: 10px 16px;
+        background: #4f46e5;
+        color: white;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #e2e8f0;
+        color: #1e293b;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      input,
+      textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+        font-family: inherit;
+      }
+      textarea {
+        min-height: 90px;
+      }
+      .status {
+        font-weight: 600;
+        color: #0f766e;
+      }
+      .status.disconnected {
+        color: #b91c1c;
+      }
+      .transcript {
+        min-height: 200px;
+        padding: 12px;
+        border-radius: 12px;
+        background: #f8fafc;
+        border: 1px dashed #cbd5f5;
+        overflow-y: auto;
+      }
+      .transcript-entry {
+        padding: 8px 0;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #eef2ff;
+        color: #4338ca;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header class="card">
+        <h1>Live Voice-to-Text Link Prototype</h1>
+        <p>
+          Create a session link, share it, and stream live transcripts. This prototype
+          wires the REST + WebSocket contract and a basic microphone capture.
+        </p>
+        <div class="row">
+          <span class="pill" id="role-pill">Role: viewer</span>
+          <span class="pill" id="session-pill">Session: none</span>
+          <span id="connection-status" class="status disconnected">Disconnected</span>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2>Session Controls</h2>
+        <div class="row">
+          <button id="new-session">New Session</button>
+          <button id="connect">Connect</button>
+          <button id="disconnect" class="secondary" disabled>Disconnect</button>
+          <button id="end-session" class="secondary" disabled>End Session</button>
+        </div>
+        <div class="row" style="margin-top: 12px;">
+          <input id="share-link" readonly placeholder="Share link will appear here" />
+          <button id="copy-link" class="secondary">Copy Link</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Host Tools</h2>
+        <p>Enable microphone streaming or send a manual transcript update.</p>
+        <div class="row">
+          <button id="start-mic">Start Mic</button>
+          <button id="stop-mic" class="secondary" disabled>Stop Mic</button>
+        </div>
+        <div class="row" style="margin-top: 12px;">
+          <textarea id="manual-text" placeholder="Type a transcript update..."></textarea>
+          <button id="send-partial">Send Partial</button>
+          <button id="send-final" class="secondary">Send Final</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Live Transcript</h2>
+        <div id="transcript" class="transcript"></div>
+      </section>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      const state = {
+        sessionId: null,
+        role: "viewer",
+        socket: null,
+        mediaRecorder: null
+      };
+
+      const updatePills = () => {
+        $("role-pill").textContent = `Role: ${state.role}`;
+        $("session-pill").textContent = `Session: ${state.sessionId ?? "none"}`;
+      };
+
+      const setStatus = (connected) => {
+        const statusEl = $("connection-status");
+        statusEl.textContent = connected ? "Connected" : "Disconnected";
+        statusEl.classList.toggle("disconnected", !connected);
+      };
+
+      const addTranscript = (text, isFinal) => {
+        const entry = document.createElement("div");
+        entry.className = "transcript-entry";
+        entry.textContent = `${isFinal ? "Final" : "Partial"}: ${text}`;
+        $("transcript").prepend(entry);
+      };
+
+      const connectSocket = () => {
+        if (!state.sessionId) {
+          alert("Create or enter a session first.");
+          return;
+        }
+        const url = new URL(window.location.href);
+        const wsUrl = `${url.protocol === "https:" ? "wss" : "ws"}://${url.host}/?session=${state.sessionId}&role=${state.role}`;
+        state.socket = new WebSocket(wsUrl);
+
+        state.socket.addEventListener("open", () => {
+          setStatus(true);
+          $("disconnect").disabled = false;
+        });
+
+        state.socket.addEventListener("close", () => {
+          setStatus(false);
+          $("disconnect").disabled = true;
+        });
+
+        state.socket.addEventListener("message", (event) => {
+          const message = JSON.parse(event.data);
+          if (message.type === "transcript.partial") {
+            addTranscript(message.text, false);
+          }
+          if (message.type === "transcript.final") {
+            addTranscript(message.text, true);
+          }
+          if (message.type === "session.status") {
+            if (message.status === "ended") {
+              $("end-session").disabled = true;
+            }
+          }
+        });
+      };
+
+      const sendEvent = (payload) => {
+        if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+          alert("WebSocket is not connected.");
+          return false;
+        }
+        state.socket.send(JSON.stringify(payload));
+        return true;
+      };
+
+      const setupFromQuery = () => {
+        const params = new URLSearchParams(window.location.search);
+        const session = params.get("session");
+        const role = params.get("role");
+        if (session) {
+          state.sessionId = session;
+        }
+        if (role) {
+          state.role = role;
+        }
+        updatePills();
+      };
+
+      const startMic = async () => {
+        if (state.mediaRecorder) {
+          return;
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+        recorder.addEventListener("dataavailable", async (event) => {
+          if (!event.data.size) {
+            return;
+          }
+          const buffer = await event.data.arrayBuffer();
+          const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+          sendEvent({
+            type: "audio.chunk",
+            sessionId: state.sessionId,
+            audioBuffer: base64,
+            sequence: Date.now()
+          });
+        });
+        recorder.start(1000);
+        state.mediaRecorder = recorder;
+        $("stop-mic").disabled = false;
+      };
+
+      const stopMic = () => {
+        if (!state.mediaRecorder) {
+          return;
+        }
+        state.mediaRecorder.stop();
+        state.mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+        state.mediaRecorder = null;
+        $("stop-mic").disabled = true;
+      };
+
+      $("new-session").addEventListener("click", async () => {
+        const response = await fetch("/sessions", { method: "POST" });
+        const data = await response.json();
+        state.sessionId = data.sessionId;
+        state.role = "host";
+        const url = new URL(window.location.href);
+        url.searchParams.set("session", data.sessionId);
+        url.searchParams.set("role", "host");
+        $("share-link").value = data.shareUrl;
+        updatePills();
+        history.replaceState(null, "", url.toString());
+        $("end-session").disabled = false;
+      });
+
+      $("connect").addEventListener("click", connectSocket);
+      $("disconnect").addEventListener("click", () => state.socket?.close());
+      $("end-session").addEventListener("click", async () => {
+        if (!state.sessionId) return;
+        await fetch(`/sessions/${state.sessionId}/end`, { method: "POST" });
+        $("end-session").disabled = true;
+      });
+      $("copy-link").addEventListener("click", () => {
+        if ($("share-link").value) {
+          navigator.clipboard.writeText($("share-link").value);
+        }
+      });
+
+      $("send-partial").addEventListener("click", () => {
+        const text = $("manual-text").value.trim();
+        if (!text) return;
+        sendEvent({
+          type: "transcript.partial",
+          sessionId: state.sessionId,
+          text,
+          startTimeMs: Date.now()
+        });
+      });
+
+      $("send-final").addEventListener("click", () => {
+        const text = $("manual-text").value.trim();
+        if (!text) return;
+        sendEvent({
+          type: "transcript.final",
+          sessionId: state.sessionId,
+          text,
+          startTimeMs: Date.now(),
+          endTimeMs: Date.now()
+        });
+      });
+
+      $("start-mic").addEventListener("click", startMic);
+      $("stop-mic").addEventListener("click", stopMic);
+
+      setupFromQuery();
+    </script>
+  </body>
+</html>

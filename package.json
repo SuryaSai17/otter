@@ -1,0 +1,14 @@
+{
+  "name": "otter-link-transcribe",
+  "version": "0.1.0",
+  "description": "Prototype for link-shared live transcription.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "nanoid": "^5.0.7",
+    "ws": "^8.17.0"
+  }
+}
